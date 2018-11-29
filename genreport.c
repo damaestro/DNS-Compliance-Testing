@@ -2846,7 +2846,7 @@ process(struct workitem *item, unsigned char *buf, int buflen, int port) {
 		addtag(item, "nsid");
 	if (seenexpire)
 		addtag(item, "expire");
-	if (seencookie && goodcookie + opts[item->test].cookie) {
+	if (seencookie && goodcookie && opts[item->test].cookie) {
 		if (rcode == ns_r_badcookie)
 			addtag(item, "cookie+badcookie");
 		else
