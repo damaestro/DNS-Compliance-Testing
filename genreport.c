@@ -2168,6 +2168,7 @@ process(struct workitem *item, unsigned char *buf, int buflen, int port) {
 	unsigned int ednssize = 0, class, ednsttl = 0, ttl, rdlen;
 	unsigned short type;
 	unsigned char *cp, *eom;
+	int goodcookie = 0;
 	int seenopt = 0, seensoa = 0, seenrrsig = 0;
 	int seennsid = 0, seenecs = 0, seenexpire = 0, seencookie = 0;
 	int seenecho = 0, seentsig = 0, proxy = 0, addrcode = 1;
@@ -2468,6 +2469,7 @@ process(struct workitem *item, unsigned char *buf, int buflen, int port) {
 			if ((eom - cp) < rdlen)
 				goto err;
 			if (type == ns_t_opt && !seenopt) {
+				char ccc[] = "\x01\x02\x03\x04\x05\x06\x07\x08";
 				unsigned char *options;
 				ednsttl = ttl;
 				ednssize = class;
@@ -2492,8 +2494,17 @@ process(struct workitem *item, unsigned char *buf, int buflen, int port) {
 						seenexpire = 1;
 					/* Server Cookie. */
 					if (code == 10 &&
-					    optlen >= 16 && optlen <= 40)
+					    optlen >= 16 && optlen <= 40) {
 						seencookie = 1;
+						if (!memcmp(ccc, options, 8)) {
+							goodcookie = 1;
+						} else {
+							if (opts[item->test].
+								cookie) {
+								ok = 0;
+						        }
+					        }
+					}
 					if (code == 100)
 						seenecho = 1;
 					options += optlen;
@@ -2835,11 +2846,18 @@ process(struct workitem *item, unsigned char *buf, int buflen, int port) {
 		addtag(item, "nsid");
 	if (seenexpire)
 		addtag(item, "expire");
-	if (seencookie) {
-		if (rcode == ns_r_badcookie && opts[item->test].cookie)
+	if (seencookie && goodcookie + opts[item->test].cookie) {
+		if (rcode == ns_r_badcookie)
 			addtag(item, "cookie+badcookie");
 		else
 			addtag(item, "cookie");
+	} else if (seencookie && opts[item->test].cookie) {
+		if (rcode == ns_r_badcookie)
+			addtag(item, "cookie-mismatch+badcookie");
+		else
+			addtag(item, "cookie-mismatch");
+	} else if (seencookie) {
+		addtag(item, "cookie");
 	}
 	if (seenecs)
 		addtag(item, "subnet");
