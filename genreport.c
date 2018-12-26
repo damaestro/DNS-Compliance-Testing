@@ -8,6 +8,9 @@
 
 #define FD_SETSIZE 1600
 
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
+#endif
 #ifndef _BSD_SOURCE
 #define _BSD_SOURCE 1
 #endif
