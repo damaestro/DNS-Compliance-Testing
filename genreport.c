@@ -1070,7 +1070,6 @@ printandfree(struct summary *summary) {
 				continue;
 			if (summary->results[i][0] == 0)
 				strncat(summary->results[i], "skipped", 100);
-			first = 0;
 			if (strcmp(opts[i].name, "do") == 0)
 				x = i;
 			if (strcmp(opts[i].name, "ednstcp") == 0 && x != -1 &&
@@ -1092,8 +1091,8 @@ printandfree(struct summary *summary) {
 			}
 			if (!first)
 				jsonadd(&jdata, ", ", &jdata_len);
-				snprintf(buf, sizeof(buf), "\"%s\": \"%s\"", opts[i].name,
-					 summary->results[i]);
+			snprintf(buf, sizeof(buf), "\"%s\": \"%s\"", opts[i].name,
+				 summary->results[i]);
 			jsonadd(&jdata, buf, &jdata_len);
 			first = 0;
 		}
