@@ -899,8 +899,9 @@ emiterr(const char *zone, const char *ns, const char *str) {
 			jsonadd(&jdata, "\"", &jdata_len);
 		}
 
+		jsonsafe(str, safe, sizeof(safe));
 		jsonadd(&jdata, ", \"error\": \"", &jdata_len);
-		jsonadd(&jdata, str, &jdata_len);
+		jsonadd(&jdata, safe, &jdata_len);
 		jsonadd(&jdata, "\" }", &jdata_len);
 	} else {
 		printf("%s.%s%s: %s\n",
@@ -931,7 +932,8 @@ printandfree(struct summary *summary) {
 
 	if ((summary->type == ns_t_a || summary->type == ns_t_aaaa) &&
 	    summary->nxdomaina && summary->nxdomainaaaa) {
-		emiterr(summary->zone, summary->ns, "no address records found (NXDOMAIN)");
+		emiterr(summary->zone, summary->ns,
+			"no address records found (NXDOMAIN)");
 		freesummary(summary);
 		return;
 	}
@@ -945,7 +947,7 @@ printandfree(struct summary *summary) {
 
 	if ((summary->type == ns_t_a || summary->type == ns_t_aaaa) &&
 	    (summary->cnamea || summary->cnameaaaa)) {
-		snprintf(buf, sizeof(buf), "nameserver is a CNAME%s%s%s\n",
+		snprintf(buf, sizeof(buf), "nameserver is a CNAME%s%s%s",
 			 summary->targetok ? " '": "",
 			 summary->targetok ? summary->target : "",
 			 summary->targetok ? "'" : "");
