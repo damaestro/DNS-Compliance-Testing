@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016, 2017  Internet Systems Consortium, Inc. ("ISC")
+ * Copyright (C) 2016-2019  Internet Systems Consortium, Inc. ("ISC")
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -130,8 +130,8 @@ static int unique = 0;
 static int useglue = 0;
 static int glueonly = 0;
 
-static char *jdata = NULL;
-static size_t jdata_len = 0;
+static const char *jrec = "{ \"data\": [ ";
+static const char *jfin = "{ }";
 
 #ifdef HAVE_RES_GETSERVERS
 static union res_sockaddr_union servers[10];
@@ -685,28 +685,6 @@ static void
 report(struct summary *summary);
 
 void
-jsonadd(char **json, const char *str, size_t *len) {
-	if (*json == NULL) {
-		*json = calloc(1, 10240);
-		if (*json == NULL)
-			return;
-		*len = 10240;
-	}
-	if (strlen(*json) + strlen(str) + 1 > *len) {
-		char *tmp = realloc(*json, *len + 10240);
-		if (tmp == NULL)
-			return;
-		*json = tmp;
-		*len += 10240;
-	}
-#ifdef HAVE_STRLCAT
-	strlcat(*json, str, *len);
-#else
-	strncat(*json, str, *len - strlen(*json) - 1);
-#endif
-}
-
-void
 jsonsafe(const char *str, char *safe, size_t len) {
 	char c;
 
@@ -878,6 +856,7 @@ freesummary(struct summary *summary) {
 	if (LINKED(summary, link))
 		UNLINK(summaries, summary, link);
 	free(summary);
+	fflush(NULL);
 }
 
 static void
@@ -885,24 +864,19 @@ emiterr(const char *zone, const char *ns, const char *str) {
 	char safe[1024];
 
 	if (json) {
-		if (jdata)
-			jsonadd(&jdata, ", ", &jdata_len);
+		printf("%s\n", jrec);
+		jrec = ",";
+		jfin = "\n] }";
 		jsonsafe(zone[0] ? zone : ".", safe, sizeof(safe));
-		jsonadd(&jdata, "{ \"zone\": \"", &jdata_len);
-		jsonadd(&jdata, safe, &jdata_len);
-		jsonadd(&jdata, "\"", &jdata_len);
+		printf("{ \"zone\": \"%s\"", safe);
 	
 		if (ns) {
 			jsonsafe(ns, safe, sizeof(safe));
-			jsonadd(&jdata, ", \"servername\": \"", &jdata_len);
-			jsonadd(&jdata, safe, &jdata_len);
-			jsonadd(&jdata, "\"", &jdata_len);
+			printf(", \"servername\": \"%s\"", safe);
 		}
 
 		jsonsafe(str, safe, sizeof(safe));
-		jsonadd(&jdata, ", \"error\": \"", &jdata_len);
-		jsonadd(&jdata, safe, &jdata_len);
-		jsonadd(&jdata, "\" }", &jdata_len);
+		printf(", \"error\": \"%s\" }", safe);
 	} else {
 		printf("%s.%s%s: %s\n",
 		       zone, ns ? " " : "", ns ? ns : "", str);
@@ -1049,25 +1023,24 @@ printandfree(struct summary *summary) {
 
 	x = -1;
 	if (json) {
-		int first = 1;
-		if (jdata)
-			jsonadd(&jdata, ",\n", &jdata_len);
-		jsonsafe(summary->zone[0] ? summary->zone : ".", safe, sizeof(safe));
-		snprintf(buf, sizeof(buf), "{ \"zone\": \"%s\"", safe);
-		jsonadd(&jdata, buf, &jdata_len);
-		snprintf(buf, sizeof(buf), ", \"address\": \"%s\"", addrbuf);
-		jsonadd(&jdata, buf, &jdata_len);
+		char *sep = "";
+		printf("%s\n", jrec);
+		jrec = ",";
+		jfin = "\n] }";
+		jsonsafe(summary->zone[0] ? summary->zone : ".",
+			 safe, sizeof(safe));
+		printf("{ \"zone\": \"%s\"", safe);
+		printf(", \"address\": \"%s\"", addrbuf);
 		if (strcmp(summary->ns, ".") != 0) {
 			jsonsafe(summary->ns, safe, sizeof(safe));
-				snprintf(buf, sizeof(buf), ", \"servername\": \"%s\"", safe);
-				jsonadd(&jdata, buf, &jdata_len);
+			printf(", \"servername\": \"%s\"", safe);
 		}
 		if (allok && summary->allok) {
-			jsonadd(&jdata, ", \"summary\": \"all ok\" }", &jdata_len);
+			printf(", \"summary\": \"all ok\" }");
 			freesummary(summary);
 			return;
 		}
-		jsonadd(&jdata, ", \"tests\": { ", &jdata_len);
+		printf( ", \"tests\": { ");
 		for (i = 0; i < sizeof(opts)/sizeof(opts[0]); i++) {
 			if ((opts[i].what & what) == 0)
 				continue;
@@ -1076,36 +1049,30 @@ printandfree(struct summary *summary) {
 			if (strcmp(opts[i].name, "do") == 0)
 				x = i;
 			if (strcmp(opts[i].name, "ednstcp") == 0 && x != -1 &&
-			    (!badtag || (strcmp(summary->results[x], "ok") != 0 &&
-					 strncmp(summary->results[x], "ok,", 3) != 0)))
+			    (!badtag ||
+			     (strcmp(summary->results[x], "ok") != 0 &&
+			      strncmp(summary->results[x], "ok,", 3) != 0)))
 			{
-				if (!first)
-					jsonadd(&jdata, ", ", &jdata_len);
-				snprintf(buf, sizeof(buf), "\"signed\": \"%s%s\"",
-					 summary->results[x],
-					 summary->seenrrsig ? ",yes" : "");
-				jsonadd(&jdata, buf, &jdata_len);
-				first = 0;
+				printf("%s\"signed\": \"%s%s\"", sep,
+				       summary->results[x],
+				       summary->seenrrsig ? ",yes" : "");
+				sep = ", ";
 			}
 			if (badtag) {
 				if (strcmp(summary->results[i], "ok") == 0 ||
 				    strncmp(summary->results[i], "ok,", 3) == 0)
 					continue;
 			}
-			if (!first)
-				jsonadd(&jdata, ", ", &jdata_len);
-			snprintf(buf, sizeof(buf), "\"%s\": \"%s\"", opts[i].name,
-				 summary->results[i]);
-			jsonadd(&jdata, buf, &jdata_len);
-			first = 0;
+			printf("%s\"%s\": \"%s\"", sep, opts[i].name,
+			       summary->results[i]);
+			sep = ", ";
 		}
-		jsonadd(&jdata, " }", &jdata_len);
+		printf(" }");
 		if (printnsid && summary->nsidlen != 0U) {
-                        jsonsafe(summary->nsid, safe, sizeof(safe));
-                        snprintf(buf, sizeof(buf), ", \"nsid\": \"%s\"", safe);
-                        jsonadd(&jdata, buf, &jdata_len);
-                }
-		jsonadd(&jdata, " }", &jdata_len);
+			jsonsafe(summary->nsid, safe, sizeof(safe));
+			printf(", \"nsid\": \"%s\"", safe);
+		}
+		printf(" }");
 		freesummary(summary);
 		return;
 	}
@@ -2507,8 +2474,8 @@ process(struct workitem *item, unsigned char *buf, int buflen, int port) {
 							if (opts[item->test].
 								cookie) {
 								ok = 0;
-						        }
-					        }
+							}
+						}
 					}
 					if (code == 100)
 						seenecho = 1;
@@ -4225,9 +4192,6 @@ main(int argc, char **argv) {
 			done = 1;
 	} while (!done);
 	if (json) {
-		printf("{\n%s%s%s\n}\n",
-		       jdata ? "\"data\": [ " : "",
-		       jdata ? jdata : "",
-		       jdata ? " ]" : "");
+		printf("%s\n", jfin);
 	}
 }
