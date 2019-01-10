@@ -945,7 +945,8 @@ printandfree(struct summary *summary) {
 
 	if ((summary->type == ns_t_a || summary->type == ns_t_aaaa) &&
 	    (summary->cnamea || summary->cnameaaaa)) {
-		snprintf(buf, sizeof(buf), "nameserver is a CNAME%s%s\n",
+		snprintf(buf, sizeof(buf), "nameserver is a CNAME%s%s%s\n",
+			 summary->targetok ? " '": "",
 			 summary->targetok ? summary->target : "",
 			 summary->targetok ? "'" : "");
 		emiterr(summary->zone, summary->ns, buf);
