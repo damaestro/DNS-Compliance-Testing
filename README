@@ -26,9 +26,7 @@ into the C library).
 The man page for genreport provides a number of examples of how it can
 be used.
 
-When building from the git run the following commands before following
+When building from the git run the following command before following
 INSTALL
 
-	autoheader
-	autoconf
-	automake --foreign -fac
+		autoreconf -fvi
