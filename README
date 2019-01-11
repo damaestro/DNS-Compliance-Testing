@@ -23,6 +23,8 @@ from the .GOV zone.
 genreport requires that libresolve / libbind be available (or be built
 into the C library).
 
+genreport requires OpenSSL to be available.
+
 The man page for genreport provides a number of examples of how it can
 be used.
 
