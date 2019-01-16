@@ -192,6 +192,12 @@ and the output is reordered to preserve the input order (-o).
 As the type list is long we also collapse the output to "all ok" (-a)
 if all subtests to a particular server succeed.
 
+## Test all the glue servers in a zone.
+
+`dig axfr zone > file`
+`( awk '$4 == "A" || $4 == "AAAA" { print $1, $5 }' file;`
+`  awk '$4 == "N" { print $1, $5 }' file ) | genreport -gG `
+
 # TESTS
 
 **dns EDNS**
