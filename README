@@ -29,6 +29,7 @@ The man page for genreport provides a number of examples of how it can
 be used.
 
 When building from the git run the following command before following
-INSTALL.  pkgconfig will also need to be installed.
+INSTALL.  pkgconfig / pkg-config will also need to be installed prior
+to running autoreconf.
 
 		autoreconf -fvi
