@@ -593,6 +593,7 @@ struct summary {
 	char zone[1024];		/* the zone's name */
 	char ns[1024];			/* the server's name */
 	char target[1024];		/* the server's real name */
+	char soaname[1024];		/* the server's real name */
 	struct sockaddr_storage storage;/* server we are talking to */
 	int tests;			/* number of outstanding tests */
 	unsigned int last;		/* last test sent */
@@ -618,6 +619,7 @@ struct summary {
 	int allrefused;			/* all answers are current ok */
 	int allservfail;		/* all answers are current ok */
 	int targetok;			/* target is valid */
+	int soaok;			/* soaname is valid */
 	struct summary *xlink;		/* cross link of recursive A/AAAA */
 	unsigned int nsidlen;
 	char nsid[100];			/* nsid if found */
@@ -964,7 +966,11 @@ printandfree(struct summary *summary) {
 		return;
 	}
 	if (summary->type == ns_t_ns && summary->nodata) {
-		emiterr(summary->zone, NULL, "no NS records found");
+		snprintf(buf, sizeof(buf), "no NS records found%s%s%s",
+			 summary->soaok ? ", try '": "",
+			 summary->soaok ? summary->soaname : "",
+			 summary->soaok ? "'" : "");
+		emiterr(summary->zone, NULL, buf);
 		freesummary(summary);
 		return;
 	}
@@ -975,7 +981,7 @@ printandfree(struct summary *summary) {
 	}
 
 	if (summary->type != 0 && summary->nxdomain) {
-		if (summary->type == ns_t_a)
+		if (summary->type == ns_t_ns)
 			emiterr(summary->zone, NULL, "NS nxdomain");
 		if (summary->type == ns_t_a)
 			emiterr(summary->zone, summary->ns, "A nxdomain");
@@ -2413,6 +2419,13 @@ process(struct workitem *item, unsigned char *buf, int buflen, int port) {
 			if (debug)
 				printf("AU: %s./%u/%u/%u/%u\n",
 				       name, type, class, ttl, rdlen);
+			if (type == ns_t_soa && item->type == ns_t_ns &&
+			    item->summary->nodata &&
+			    ns_samedomain(item->summary->zone, name)) {
+				strlcpy(item->summary->soaname, name,
+					sizeof(item->summary->soaname));
+				item->summary->soaok = 1;
+			}
 		}
 	}
 
