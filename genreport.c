@@ -650,6 +650,7 @@ struct workitem {
 	int readlen;			/* how much we need to read */
 	int read;			/* how much has been read so far */
 	int icmp;			/* this is a icmp echo request */
+	int onheap;
 	unsigned char buf[512];		/* the question we sent */
 	unsigned char tcpbuf[0x10000];	/* where to accumulate the tcp response */
 	unsigned char mac[32];		/* tsig hmac-sha256 mac */
@@ -661,7 +662,6 @@ struct workitem {
  *	'work' udp qeries;
  *	'connecting' tcp qeries;
  *	'reading' tcp qeries;
- *	'pending' deferred work items;
  *
  * Outstanding queries by qid.
  *	'ids'
@@ -672,10 +672,10 @@ struct workitem {
 static struct {
 	struct workitem *head;
 	struct workitem *tail;
-} work, connecting, reading, pending, ids[0x10000], seq[0x10000];
+} work, connecting, reading, ids[0x10000], seq[0x10000];
 
 static void
-dotest(struct workitem *item);
+dotest(struct workitem *item, int usec);
 
 static void
 nextserver(struct workitem *item);
@@ -776,6 +776,104 @@ storage_equal(struct sockaddr_storage *s1, struct sockaddr_storage *s2) {
 		return (1);
 	}
 	return (0);
+}
+
+struct itemheap {
+	size_t			size;
+	size_t			last;
+	struct workitem **	array;
+} pending = { 0, 0, NULL };
+
+#define heap_parent(i)                  ((i) >> 1)
+#define heap_left(i)                    ((i) << 1)
+
+static int
+heap_compare(struct workitem *a, struct workitem *b) {
+	if (a->when.tv_sec < b->when.tv_sec)
+		return (1);
+	if (a->when.tv_sec == b->when.tv_sec &&
+	    a->when.tv_usec < b->when.tv_usec)
+		return (1);
+	return (0);
+}
+
+static void
+heap_grow(struct itemheap *heap) {
+	struct workitem **new_array;
+	size_t new_size;
+
+	new_size = heap->size += 1024;
+	new_array = realloc(heap->array, new_size);
+	if (new_array == NULL) {
+		perror("realloc");
+		exit(1);
+	}
+	heap->size = new_size;
+	heap->array = new_array;
+}
+
+static void
+heap_floatup(struct itemheap *heap, size_t i, struct workitem *item) {
+	size_t p;
+
+	for (p = heap_parent(i) ;
+	     i > 1 && heap_compare(item, heap->array[p]) ;
+	     i = p, p = heap_parent(i)) {
+		heap->array[i] = heap->array[p];
+	}
+	heap->array[i] = item;
+}
+
+static void
+heap_sinkdown(struct itemheap *heap, size_t i, struct workitem *item) {
+	size_t j, size, half_size;
+
+	size = heap->last;
+	half_size = size / 2;
+
+	while (i <= half_size) {
+		j = heap_left(i);
+		if (j < size &&
+		    heap_compare(heap->array[j+1], heap->array[j]))
+			j++;
+		if (heap_compare(item, heap->array[j]))
+			break;
+		heap->array[i] = heap->array[j];
+		i = j;
+	}
+	heap->array[i] = item;
+}
+
+static void
+heap_insert(struct itemheap *heap, struct workitem *item) {
+	size_t new_last;
+
+	new_last = heap->last + 1;
+	if (new_last >= heap->size)
+		heap_grow(heap);
+	heap->last = new_last;
+	item->onheap = 1;
+
+	heap_floatup(heap, new_last, item);
+}
+
+static void
+heap_delete(struct itemheap *heap) {
+	if (heap->last > 0) {
+		heap->array[1]->onheap = 0;
+		heap->array[1] = heap->array[heap->last];
+		heap->array[heap->last] = NULL;
+		heap->last--;
+		if (heap->last > 1)
+			heap_sinkdown(heap, 1, heap->array[1]);
+	}
+}
+
+struct workitem *
+heap_item(struct itemheap *heap) {
+	if (heap->last)
+		return (heap->array[1]);
+	return (NULL);
 }
 
 static int
@@ -1141,7 +1239,7 @@ report(struct summary *summary) {
 			item->summary = summary;
 			item->test = item->summary->last;
 			item->tcpfd = -1;
-			dotest(item);
+			dotest(item, 0);
 			return;
 		}
 	}
@@ -1239,8 +1337,6 @@ freeitem(struct workitem * item) {
 		outstanding--;
 	if (LINKED(item, link))
 		UNLINK(work, item, link);
-	if (LINKED(item, plink))
-		UNLINK(pending, item, plink);
 	if (LINKED(item, rlink))
 		UNLINK(reading, item, rlink);
 	if (LINKED(item, clink))
@@ -1249,6 +1345,8 @@ freeitem(struct workitem * item) {
 		UNLINK(ids[item->id], item, idlink);
 	if (LINKED(item, seqlink))
 		UNLINK(seq[item->id], item, seqlink);
+	if (item->onheap)
+		exit(1);
 	free(item);
 }
 
@@ -1299,13 +1397,13 @@ resend(struct workitem *item) {
 		item->when.tv_sec += 1;
 		if (LINKED(item, link))
 			UNLINK(work, item, link);
-		APPEND(pending, item, plink);
+		heap_insert(&pending, item);
 		return;
 	}
 
 	n = sendto(fd, item->buf, item->buflen, 0,
 		   (struct sockaddr *)&item->summary->storage, ss_len);
-	if (n > 0) {
+	if (n > 0 || errno == EINPROGRESS) {
 		if (debug)
 			printf("resend %s rdlen=%u udpsize=%u flags=%04x "
 			       "version=%u tcp=%u ignore=%u id=%u\n",
@@ -1387,7 +1485,7 @@ send_icmp4(struct workitem *item) {
 	if (!item->outstanding && outstanding > maxoutstanding) {
 		gettimeofday(&item->when, NULL);
 		item->when.tv_sec += 1;
-		APPEND(pending, item, plink);
+		heap_insert(&pending, item);
 		APPEND(seq[item->id], item, seqlink);
 		return;
 	}
@@ -1440,7 +1538,7 @@ send_icmp6(struct workitem *item) {
 	if (!item->outstanding && outstanding > maxoutstanding) {
 		gettimeofday(&item->when, NULL);
 		item->when.tv_sec += 1;
-		APPEND(pending, item, plink);
+		heap_insert(&pending, item);
 		APPEND(seq[item->id], item, seqlink);
 		return;
 	}
@@ -1489,7 +1587,7 @@ send_icmp(struct workitem *item) {
  * Start a individual test.
  */
 static void
-dotest(struct workitem *item) {
+dotest(struct workitem *item, int usec) {
 	unsigned char *cp;
 	unsigned int ttl;
 	int n, fd, id, tries = 0;
@@ -1623,7 +1721,7 @@ dotest(struct workitem *item) {
 	}
 
 	/*
-	 * Add TSIG record with valid MAC if required by test.  
+	 * Add TSIG record with valid MAC if required by test.
 	 */
 	if (n > 0 && strcmp(opts[item->test].name, "dnswkk") == 0) {
 		time_t now;
@@ -1703,12 +1801,21 @@ dotest(struct workitem *item) {
 		}
 
 		/*
-		 * If there is too much outstanding work queue this item.
+		 * If there is too much outstanding work queue this item or
+		 * this item is to be delayed.
 		 */
-		if (!item->outstanding && outstanding > maxoutstanding) {
+		if (!item->outstanding &&
+		    (usec || outstanding > maxoutstanding)) {
 			gettimeofday(&item->when, NULL);
-			item->when.tv_sec += 1;
-			APPEND(pending, item, plink);
+			if (usec) {
+				item->when.tv_usec += usec;
+				while (item->when.tv_usec > 1000000) {
+					item->when.tv_usec -= 1000000;
+					item->when.tv_sec += 1;
+				}
+			} else 
+				item->when.tv_sec += 1;
+			heap_insert(&pending, item);
 			APPEND(ids[item->id], item, idlink);
 			return;
 		}
@@ -1755,6 +1862,7 @@ check(char *zone, char *ns, char *address, struct summary *parent, int port) {
 	struct in6_addr addr6;
 	struct sockaddr_storage storage;
 	struct summary *summary;
+	int usec = 0;
 
 	memset(&storage, 0, sizeof(storage));
 	if (inet_pton(AF_INET6, address, &addr6) == 1) {
@@ -1822,9 +1930,10 @@ check(char *zone, char *ns, char *address, struct summary *parent, int port) {
 		item->summary->tests++;
 		item->summary->last = item->test = i;
 		item->tcpfd = -1;
-		dotest(item);
+		dotest(item, usec);
 		if (serial)
 			break;
+		usec += 113000;
 	}
 	report(summary);	/* Release reference. */
 }
@@ -1972,7 +2081,7 @@ dolookup(struct workitem *item, int type) {
 		if (!item->outstanding && outstanding > maxoutstanding) {
 			gettimeofday(&item->when, NULL);
 			item->when.tv_sec += 1;
-			APPEND(pending, item, plink);
+			heap_insert(&pending, item);
 			APPEND(ids[item->id], item, idlink);
 			return;
 		}
@@ -3777,7 +3886,7 @@ info(int sig) {
 int
 main(int argc, char **argv) {
 	struct timeval now, to, start, *tpo = NULL;
-	struct workitem *item = NULL, *citem, *ritem;
+	struct workitem *item = NULL, *citem, *ritem, *pitem;
 	fd_set myrfds, mywfds;
 	unsigned int i;
 	int n;
@@ -4089,8 +4198,11 @@ main(int argc, char **argv) {
 		item = HEAD(work);
 		ritem = HEAD(reading);
 		citem = HEAD(connecting);
-		if (item || citem || ritem || stats)
+		pitem = heap_item(&pending);
+
+		if (item || citem || ritem || pitem || stats)
 			gettimeofday(&now, NULL);
+
 		if (stats) {
 			long long usecs, qps;
 			usecs = (now.tv_sec - start.tv_sec) * 1000000;
@@ -4160,14 +4272,18 @@ main(int argc, char **argv) {
 		}
 
 		/*
-		 * If we have space for pending items do them now.
+		 * Do pending items now;
 		 */
-		for (;;) {
-			item = HEAD(pending);
-			if (item == NULL || outstanding > maxoutstanding)
+		while (pitem) {
+			if (pitem->when.tv_sec > now.tv_sec ||
+			    (pitem->when.tv_sec == now.tv_sec &&
+			     pitem->when.tv_usec > now.tv_usec))
 				break;
-			UNLINK(pending, item, plink);
-			resend(item);
+			if (outstanding > maxoutstanding)
+				break;
+			heap_delete(&pending);
+			resend(pitem);
+			pitem = heap_item(&pending);
 		} 
 
 		/*
@@ -4179,6 +4295,8 @@ main(int argc, char **argv) {
 		item = HEAD(work);
 		ritem = HEAD(reading);
 		citem = HEAD(connecting);
+		pitem = heap_item(&pending);
+
 		/*
 		 * Make item be the earliest of item, citem.
 		 */
@@ -4200,6 +4318,17 @@ main(int argc, char **argv) {
 				item = ritem;
 		} else if (item == NULL)
 			item = ritem;
+
+		/*
+		 * Make item be the earliest of item, pitem.
+		 */
+		if (item && pitem) {
+			if (pitem->when.tv_sec < item->when.tv_sec ||
+			    (pitem->when.tv_sec == item->when.tv_sec &&
+			     pitem->when.tv_usec < item->when.tv_usec))
+				item = pitem;
+		} else if (item == NULL)
+			item = pitem;
 
 		if (eof && item == NULL)
 			done = 1;
